@@ -4,14 +4,14 @@ import torch.nn.functional as F
 
 
 class SelfAttention(nn.Module):
-    def __init__(self, emb, heads=8):
+    def __init__(self, emb, heads=8, mask=False):
         super().__init__()
         assert emb % heads == 0
-        self.emb, self.heads = emb, heads
+        self.emb, self.heads, self.mask = emb, heads, mask
 
-        self.tokeys    = nn.Linear(emb, emb, bias=False)
-        self.toqueries = nn.Linear(emb, emb, bias=False)
-        self.tovalues  = nn.Linear(emb, emb, bias=False)
+        self.tokeys     = nn.Linear(emb, emb, bias=False)
+        self.toqueries  = nn.Linear(emb, emb, bias=False)
+        self.tovalues   = nn.Linear(emb, emb, bias=False)
         self.unifyheads = nn.Linear(emb, emb)
 
     def forward(self, x):
@@ -27,7 +27,13 @@ class SelfAttention(nn.Module):
         values  = values.transpose(1, 2).contiguous().view(b * h, t, s)
 
         dot = torch.bmm(queries, keys.transpose(1, 2)) / (s ** 0.5)
+
+        if self.mask:  # causal mask: token i cannot attend to positions j > i
+            indices = torch.triu_indices(t, t, offset=1, device=x.device)
+            dot[:, indices[0], indices[1]] = float('-inf')
+
         dot = F.softmax(dot, dim=2)
+        self.last_attn = dot.detach()  # saved for inspection
 
         out = torch.bmm(dot, values).view(b, h, t, s)
         out = out.transpose(1, 2).contiguous().view(b, t, e)
@@ -35,9 +41,9 @@ class SelfAttention(nn.Module):
 
 
 class TransformerBlock(nn.Module):
-    def __init__(self, emb, heads, dropout=0.0):
+    def __init__(self, emb, heads, mask=False, dropout=0.0):
         super().__init__()
-        self.attention = SelfAttention(emb, heads=heads)
+        self.attention = SelfAttention(emb, heads=heads, mask=mask)
         self.norm1 = nn.LayerNorm(emb)
         self.norm2 = nn.LayerNorm(emb)
         self.ff = nn.Sequential(
@@ -82,3 +88,32 @@ class CTransformer(nn.Module):
 
         x = x.max(dim=1)[0] if self.max_pool else x.mean(dim=1)
         return F.log_softmax(self.toprobs(x), dim=1)
+
+
+class GTransformer(nn.Module):
+    """Transformer for generating text (Bloem 2019). Uses a causal mask so each
+    token can only attend to previous tokens."""
+
+    def __init__(self, emb, heads, depth, seq_length, num_tokens, dropout=0.0):
+        super().__init__()
+
+        self.token_emb = nn.Embedding(num_tokens, emb)
+        self.pos_emb   = nn.Embedding(seq_length, emb)
+
+        self.tblocks = nn.Sequential(
+            *[TransformerBlock(emb, heads, mask=True, dropout=dropout) for _ in range(depth)]
+        )
+        self.toprobs = nn.Linear(emb, num_tokens)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        tokens = self.token_emb(x)
+        b, t, e = tokens.size()
+
+        positions = torch.arange(t, device=x.device)
+        x = self.dropout(tokens + self.pos_emb(positions)[None, :, :].expand(b, t, e))
+        x = self.tblocks(x)
+
+        # project every position to a distribution over the vocabulary
+        x = self.toprobs(x.view(b * t, e)).view(b, t, -1)
+        return F.log_softmax(x, dim=2)
