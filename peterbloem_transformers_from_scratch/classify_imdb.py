@@ -6,7 +6,7 @@ from argparse import ArgumentParser
 import tqdm
 
 from model import CTransformer
-from data import get_loaders
+from data_imdb import get_loaders
 
 NUM_CLASSES = 2
 

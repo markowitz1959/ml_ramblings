@@ -1,5 +1,5 @@
 import sys
-sys.path.insert(0, '/Users/pcharmoy/dev/ml_ramblings/peterbloem_transformers_from_scratch/idmb_classifier')
+sys.path.insert(0, '/Users/pcharmoy/dev/ml_ramblings/peterbloem_transformers_from_scratch')
 
 import torch
 import torch.nn.functional as F
@@ -8,7 +8,7 @@ from torch.utils.tensorboard import SummaryWriter
 import tqdm
 
 from model import CTransformer
-from data import get_loaders
+from data_imdb import get_loaders
 
 NUM_CLASSES = 2
 
